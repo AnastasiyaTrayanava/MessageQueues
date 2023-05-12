@@ -54,22 +54,33 @@ namespace MessageQueues.LargeDataCapture
                 return;
             }
             Console.WriteLine($"Changed: {e.FullPath}");
+
+            var file = new FileInfo(e.FullPath);
+            while (IsFileLocked(file))
+            {
+                Console.WriteLine($"File is locked: {e.FullPath}");
+            }
             SendMessage(e.FullPath);
         }
 
         private static void OnCreated(object sender, FileSystemEventArgs e)
         {
             Console.WriteLine($"Created: {e.FullPath}");
+            var file = new FileInfo(e.FullPath);
+            while (IsFileLocked(file))
+            {
+                Console.WriteLine($"File is locked: {e.FullPath}");
+            }
             SendMessage(e.FullPath);
         }
 
         private static void SendMessage(string filePath)
         {
-            const int chunkSize = 4096;
+            //const int chunkSize = 4096;
+            const int chunkSize = 1048576;
             var count = 0;
 
             var fileStream = File.OpenRead(filePath);
-            var streamReader = new StreamReader(fileStream);
 
             var fileSize = fileStream.Length;
             var remainingFileSize = Convert.ToInt32(fileStream.Length);
@@ -104,12 +115,32 @@ namespace MessageQueues.LargeDataCapture
                     basicProperties, 
                     buffer);
 
-                Console.WriteLine($"File sent: {filePath}");
+                Console.WriteLine($"Chunk #{count} sent: {filePath}");
                 remainingFileSize -= read;
             }
 
-            streamReader.Close();
             fileStream.Close();
+        }
+
+        private static bool IsFileLocked(FileInfo file)
+        {
+            FileStream stream = null;
+
+            try
+            {
+                stream = file.Open(FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            }
+            catch (IOException)
+            {
+                return true;
+            }
+            finally
+            {
+                if (stream != null)
+                    stream.Close();
+            }
+
+            return false;
         }
     }
 }
