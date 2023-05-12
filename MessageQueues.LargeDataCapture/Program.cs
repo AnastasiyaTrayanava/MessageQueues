@@ -1,8 +1,7 @@
 ﻿using RabbitMQ.Client;
 using System;
+using System.Collections.Generic;
 using System.IO;
-using System.Reflection;
-using System.Threading.Tasks;
 
 namespace MessageQueues.LargeDataCapture
 {
@@ -48,35 +47,69 @@ namespace MessageQueues.LargeDataCapture
             Console.WriteLine($"Listening to folder {_listeningFolder}");
         }
 
-        private static async void OnChanged(object sender, FileSystemEventArgs e)
+        private static void OnChanged(object sender, FileSystemEventArgs e)
         {
             if (e.ChangeType != WatcherChangeTypes.Changed)
             {
                 return;
             }
             Console.WriteLine($"Changed: {e.FullPath}");
-            await SendMessage(e.FullPath);
+            SendMessage(e.FullPath);
         }
 
-        private static async void OnCreated(object sender, FileSystemEventArgs e)
+        private static void OnCreated(object sender, FileSystemEventArgs e)
         {
             Console.WriteLine($"Created: {e.FullPath}");
-            await SendMessage(e.FullPath);
+            SendMessage(e.FullPath);
         }
 
-        private static async Task SendMessage(string filePath)
+        private static void SendMessage(string filePath)
         {
             const int chunkSize = 4096;
-            var file = await File.ReadAllBytesAsync(filePath);
+            var count = 0;
 
-            IBasicProperties basicProperties = _channel.CreateBasicProperties();
-            basicProperties.Persistent = true;
+            var fileStream = File.OpenRead(filePath);
+            var streamReader = new StreamReader(fileStream);
 
-            _channel.BasicPublish(exchange: string.Empty,
-                routingKey: _queueName,
-                basicProperties: basicProperties,
-                body: file);
-            Console.WriteLine($"File sent: {filePath}");
+            var fileSize = fileStream.Length;
+            var remainingFileSize = Convert.ToInt32(fileStream.Length);
+            byte[] buffer;
+
+            while (remainingFileSize > 0)
+            {
+                int read;
+
+                if (remainingFileSize > chunkSize)
+                {
+                    buffer = new byte[chunkSize];
+                    read = fileStream.Read(buffer, 0, chunkSize);
+                }
+                else
+                {
+                    buffer = new byte[remainingFileSize];
+                    read = fileStream.Read(buffer, 0, remainingFileSize);
+                }
+
+                count++;
+                var fileName = $"largeFile_chunk{count}.txt";
+
+                var basicProperties = _channel.CreateBasicProperties();
+                basicProperties.Persistent = true;
+                basicProperties.Headers = new Dictionary<string, object>();
+                basicProperties.Headers.Add("output-file", fileName);
+
+                _channel.BasicPublish(
+                    string.Empty, 
+                    _queueName, 
+                    basicProperties, 
+                    buffer);
+
+                Console.WriteLine($"File sent: {filePath}");
+                remainingFileSize -= read;
+            }
+
+            streamReader.Close();
+            fileStream.Close();
         }
     }
 }
