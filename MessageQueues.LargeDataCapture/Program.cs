@@ -1,7 +1,9 @@
-﻿using RabbitMQ.Client;
+﻿using MessageQueues.Common.Models;
+using RabbitMQ.Client;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.Serialization.Formatters.Binary;
 
 namespace MessageQueues.LargeDataCapture
 {
@@ -9,9 +11,11 @@ namespace MessageQueues.LargeDataCapture
     {
         private const string _listeningFolder = @"C:\Inbox";
         private const string _fileFormats = "*.txt";
+        private const string _queueName = "largequeue";
+        private const int _chunkSize = 1048576;
+
         private static IModel _channel;
         private static FileSystemWatcher _watcher;
-        private const string _queueName = "largequeue";
 
         static void Main(string[] args)
         {
@@ -76,24 +80,24 @@ namespace MessageQueues.LargeDataCapture
 
         private static void SendMessage(string filePath)
         {
-            //const int chunkSize = 4096;
-            const int chunkSize = 1048576;
             var count = 0;
 
             var fileStream = File.OpenRead(filePath);
 
             var fileSize = fileStream.Length;
             var remainingFileSize = Convert.ToInt32(fileStream.Length);
-            byte[] buffer;
+            var chunksAmount = Convert.ToInt32(Math.Ceiling(decimal.Divide(fileSize, _chunkSize)));
 
             while (remainingFileSize > 0)
             {
                 int read;
+                byte[] buffer;
+                count++;
 
-                if (remainingFileSize > chunkSize)
+                if (remainingFileSize > _chunkSize)
                 {
-                    buffer = new byte[chunkSize];
-                    read = fileStream.Read(buffer, 0, chunkSize);
+                    buffer = new byte[_chunkSize];
+                    read = fileStream.Read(buffer, 0, _chunkSize);
                 }
                 else
                 {
@@ -101,25 +105,40 @@ namespace MessageQueues.LargeDataCapture
                     read = fileStream.Read(buffer, 0, remainingFileSize);
                 }
 
-                count++;
-                var fileName = $"largeFile_chunk{count}.txt";
+                var messageBody = new FileProperties
+                {
+                    Name = Path.GetFileName(filePath),
+                    Body = buffer,
+                    ChunkNumber = count,
+                    TotalChunks = chunksAmount
+                };
+
+                var message = SerializeMessage(messageBody);
 
                 var basicProperties = _channel.CreateBasicProperties();
                 basicProperties.Persistent = true;
-                basicProperties.Headers = new Dictionary<string, object>();
-                basicProperties.Headers.Add("output-file", fileName);
 
                 _channel.BasicPublish(
                     string.Empty, 
                     _queueName, 
-                    basicProperties, 
-                    buffer);
+                    basicProperties,
+                    message);
 
-                Console.WriteLine($"Chunk #{count} sent: {filePath}");
+                Console.WriteLine($"Chunk #{count}/{chunksAmount} sent: {filePath}");
                 remainingFileSize -= read;
             }
 
             fileStream.Close();
+        }
+
+        private static byte[] SerializeMessage(FileProperties file)
+        {
+            var binaryFormatter = new BinaryFormatter();
+            using (var stream = new MemoryStream())
+            {
+                binaryFormatter.Serialize(stream, file);
+                return stream.ToArray();
+            }
         }
 
         private static bool IsFileLocked(FileInfo file)
